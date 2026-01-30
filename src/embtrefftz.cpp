@@ -263,21 +263,13 @@ createConformingTrefftzTables (Table<int> &table, Table<int> &table2,
   const size_t ne = ma->GetNE (vb);
   const size_t ndof_conforming
       = (fes_conformity) ? fes_conformity->GetNDof () : 0;
-  TableCreator<int> creator (ne);
-  TableCreator<int> creator2 (ne);
+  const size_t ignorendofs = ignoredofs ? ignoredofs->NumSet () : 0;
+  TableCreator<int> creator (ne+ignorendofs);
+  TableCreator<int> creator2 (ne+ignorendofs);
 
   size_t trefftz_dof_offset = ndof_conforming;
-
-  Array<DofId> new_ignore_dofnrs; // TODO: should be keyd
-  if (ignoredofs)
-    {
-      new_ignore_dofnrs.SetSize (fes.GetNDof ());
-      for (size_t i = 0; i < fes.GetNDof (); i++)
-        if (ignoredofs->Test (i))
-          new_ignore_dofnrs[i] = trefftz_dof_offset++;
-    }
-
   size_t global_trefftz_ndof = 0;
+  
   for (; !creator.Done (); creator++, creator2++)
     {
       size_t next_trefftz_dof = trefftz_dof_offset;
@@ -294,12 +286,12 @@ createConformingTrefftzTables (Table<int> &table, Table<int> &table2,
           fes.GetDofNrs (ei, dnums);
           bool hasregdof = false;
           for (DofId d : dnums)
-            if (IsRegularDof (d))
+            if ((IsRegularDof (d)) && !(ignoredofs && ignoredofs->Test (d)))
               {
                 creator.Add (ei.Nr (), d);
                 hasregdof = true;
-                if (ignoredofs && ignoredofs->Test (d))
-                  creator2.Add (ei.Nr (), new_ignore_dofnrs[d]);
+                //if (ignoredofs && ignoredofs->Test (d))
+                //  creator2.Add (ei.Nr (), new_ignore_dofnrs[d]);
               }
           // assumption here: Either all or no dof is regular
           if (hasregdof)
@@ -330,14 +322,26 @@ createConformingTrefftzTables (Table<int> &table, Table<int> &table2,
             }
         }
       global_trefftz_ndof = next_trefftz_dof - ndof_conforming;
+
+      if (ignoredofs)
+      {
+        size_t ignored_dof_count = 0;
+        for (size_t i = 0; i < fes.GetNDof (); i++)
+          if (ignoredofs->Test (i))
+          {
+            creator.Add (ne+ignored_dof_count, i);
+            creator2.Add (ne+ignored_dof_count, next_trefftz_dof + ignored_dof_count);
+            ignored_dof_count++;
+          }
+      }
+
     }
 
   (*testout) << "created " << global_trefftz_ndof << " many trefftz dofs"
              << std::endl;
-
   table = creator.MoveTable ();
   table2 = creator2.MoveTable ();
-  return global_trefftz_ndof + ndof_conforming;
+  return global_trefftz_ndof + ndof_conforming + ignorendofs;
 }
 
 template <typename SCAL>
@@ -360,11 +364,12 @@ fillSparseMatrixWithData (SparseMatrix<SCAL> &P,
   if (ignoredofs)
     {
       Array<int> id_index (ignoredofs->NumSet ());
-      for (size_t i = 0, id = 0; i < ignoredofs->Size (); i++)
+      for (size_t i = 0, id = P.Width() - ignoredofs->NumSet (), local_id = 0; i < ignoredofs->Size (); i++)
         if (ignoredofs->Test (i))
           {
-            id_index[id] = P.GetPosition (i, id);
+            id_index[local_id] = P.GetPosition (i, id);
             id++;
+            local_id++;
           }
       Vector<SCAL> one (id_index.Size ());
       one = 1.0;
@@ -898,9 +903,11 @@ namespace ngcomp
                   = make_optional<Matrix<SCAL>> (elmat_T_inv);
             }
 
-          if (ignoredofs)
-            elmat_T = putbackVisibleDofs (elmat_T, element_id, *fes, dofs,
-                                          ignoredofs);
+          // TODO / TO-DISCUSS: here I through away the ignoredofs from elmats! - needs adaptations
+          // for pseudoinverse and alike....
+          //if (ignoredofs)
+          //  elmat_T = putbackVisibleDofs (elmat_T, element_id, *fes, dofs,
+          //                                ignoredofs);
 
           etmats[element_id.Nr ()] = make_optional<Matrix<SCAL>> (elmat_T);
           local_ndofs_trefftz[element_id.Nr ()] = ndof_trefftz_i;
