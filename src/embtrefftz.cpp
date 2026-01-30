@@ -259,7 +259,8 @@ createConformingTrefftzTables (Table<int> &table, Table<int> &table2,
                                shared_ptr<const BitArray> ignoredofs)
 {
   const auto ma = fes.GetMeshAccess ();
-  const size_t ne = ma->GetNE (VOL);
+  const VorB vb = ma->GetNE (VOL) > 0 ? VOL : BND;
+  const size_t ne = ma->GetNE (vb);
   const size_t ndof_conforming
       = (fes_conformity) ? fes_conformity->GetNDof () : 0;
   TableCreator<int> creator (ne);
@@ -280,7 +281,7 @@ createConformingTrefftzTables (Table<int> &table, Table<int> &table2,
   for (; !creator.Done (); creator++, creator2++)
     {
       size_t next_trefftz_dof = trefftz_dof_offset;
-      for (auto ei : ma->Elements (VOL))
+      for (auto ei : ma->Elements (vb))
         {
           if (!etmats[ei.Nr ()])
             continue;
@@ -348,7 +349,8 @@ fillSparseMatrixWithData (SparseMatrix<SCAL> &P,
                           shared_ptr<BitArray> ignoredofs)
 {
   P.SetZero ();
-  for (auto ei : ma.Elements (VOL))
+  const VorB vb = ma.GetNE(VOL) > 0 ? VOL : BND;
+  for (auto ei : ma.Elements (vb))
     if (etmats[ei.Nr ()])
       {
         P.AddElementMatrix (table[ei.Nr ()], table2[ei.Nr ()],
@@ -460,7 +462,7 @@ bool bfIsDefinedOnElement (const SumOfIntegrals &bf,
 {
   for (auto icf : bf.icfs)
     {
-      if (icf->dx.vb == VOL)
+      if (icf->dx.vb == mesh_element.VB())
         if ((!icf->dx.definedonelements)
             || (icf->dx.definedonelements->Test (mesh_element.Nr ())))
           return true;
@@ -695,7 +697,8 @@ namespace ngcomp
     double trefftz_residual = 0.0;
 
     auto ma = fes->GetMeshAccess ();
-    const size_t num_elements = ma->GetNE (VOL);
+    VorB vb = ma->GetNE (VOL) > 0 ? VOL : BND;
+    const size_t num_elements = ma->GetNE (vb);
     // #TODO what is a good size for the local heap?
     // For the moment: large enough constant size.
     LocalHeap clh = LocalHeap (100 * 1000 * 1000, "embt", true);
@@ -741,7 +744,7 @@ namespace ngcomp
     // E_T.shape == (ndof, ndof_trefftz),
     // f.shape == (ndof_test), u_p.shape == (ndof)
     ma->IterateElements (
-        VOL, clh, [&] (Ngs_Element mesh_element, LocalHeap &lh) {
+        vb, clh, [&] (Ngs_Element mesh_element, LocalHeap &lh) {
           const ElementId element_id = ElementId (mesh_element);
 
           // skip this element, if the bilinear forms are not defined
@@ -780,8 +783,8 @@ namespace ngcomp
           auto [elmat_Cl, elmat_L] = elmat_A.SplitRows (ndof_conforming);
           auto elmat_Cr = elmat_B.Rows (ndof_conforming);
 
-          // the diff. operator L operates only on volume terms
-          addIntegrationToElementMatrix (elmat_L, op_integrators[VOL], *ma,
+          // the diff. operator L operates only on volume/bnd (vb) terms
+          addIntegrationToElementMatrix (elmat_L, op_integrators[vb], *ma,
                                          element_id, *fes, *fes_test, lh);
           if (fes_conformity)
             {
@@ -805,7 +808,7 @@ namespace ngcomp
               *fes_ip_sqinv = 0.;
 
               addIntegrationToElementMatrix (*fes_ip_sqinv,
-                                             fes_ip_integrators[VOL], *ma,
+                                             fes_ip_integrators[vb], *ma,
                                              element_id, *fes, *fes, lh);
 
               getPseudoInverse (*fes_ip_sqinv, 0, lh, true);
@@ -1043,7 +1046,7 @@ namespace ngcomp
     calculateLinearFormIntegrators (*_trhs, lfis);
 
     ma->IterateElements (
-        VOL, clh, [&] (Ngs_Element mesh_element, LocalHeap &lh) {
+        vb, clh, [&] (Ngs_Element mesh_element, LocalHeap &lh) {
           if (fes->IsComplex () && !etmatsc[mesh_element.Nr ()])
             return;
           if (!fes->IsComplex () && !etmats[mesh_element.Nr ()])
@@ -1092,7 +1095,7 @@ namespace ngcomp
     particular_solution_vec->operator= (0.0);
 
     ma->IterateElements (
-        VOL, clh, [&] (Ngs_Element mesh_element, LocalHeap &lh) {
+        vb, clh, [&] (Ngs_Element mesh_element, LocalHeap &lh) {
           if (fes->IsComplex () && !etmatsc[mesh_element.Nr ()])
             return;
           if (!fes->IsComplex () && !etmats[mesh_element.Nr ()])
@@ -1158,7 +1161,7 @@ namespace ngcomp
 
     // Makes use of the element coloring of the FESpace
     // to prevent race conditions when writing to `vec`.
-    IterateElements ((fes_conformity) ? *fes_conformity : *fes, VOL, lh,
+    IterateElements ((fes_conformity) ? *fes_conformity : *fes, vb, lh,
                      [&] (auto ei, LocalHeap &mlh) {
                        const HeapReset hr (mlh);
                        Array<DofId> dofs;
@@ -1241,7 +1244,8 @@ namespace ngcomp
         = (fes_conformity) ? fes_conformity->GetNDof () : 0;
 
     size_t ndof_trefftz = 0;
-    for (auto ei : this->ma->Elements (VOL))
+
+    for (auto ei : this->ma->Elements (emb->VB()))
       {
         // skip this element, if there is no element matrix defined
         if ((this->IsComplex () && !emb->GetEtmatC (ei.Nr ()))
@@ -1280,8 +1284,8 @@ namespace ngcomp
   void
   EmbTrefftzFESpace<T>::GetDofNrs (ElementId ei, Array<DofId> &dnums) const
   {
-    // TODO: ignore dofs for BND, BBND, BBBND?
-    if (!T::DefinedOn (ei) || ei.VB () != VOL)
+    // TODO: ignore dofs for VB() != vb
+    if (!T::DefinedOn (ei) || ei.VB () != emb->VB())
       return;
     // 1. Provide the dof nrs of the conforming Trefftz space, that are
     // associated to the element ei.
@@ -1309,7 +1313,7 @@ namespace ngcomp
   EmbTrefftzFESpace<T>::GetEtmatInv (size_t idx) const
   {
     std::call_once (this->etmats_inv_computed, [&] () {
-      this->GetMeshAccess ()->IterateElements (VOL, [&] (ElementId ei) {
+      this->GetMeshAccess ()->IterateElements (emb->VB(), [&] (ElementId ei) {
         optional<Matrix<double>> etmat = emb->GetEtmat (ei.Nr ());
         this->etmats_inv[ei.Nr ()]
             = (etmat) ? make_optional (getPseudoInverse (*etmat, 0)) : nullopt;
@@ -1323,7 +1327,7 @@ namespace ngcomp
   EmbTrefftzFESpace<T>::GetEtmatCInv (size_t idx) const
   {
     std::call_once (this->etmats_inv_computed, [&] () {
-      this->GetMeshAccess ()->IterateElements (VOL, [&] (ElementId ei) {
+      this->GetMeshAccess ()->IterateElements (emb->VB(), [&] (ElementId ei) {
         optional<Matrix<Complex>> etmat = emb->GetEtmatC (ei.Nr ());
         this->etmatsc_inv[ei.Nr ()]
             = (etmat) ? make_optional (getPseudoInverse (*etmat, 0)) : nullopt;
